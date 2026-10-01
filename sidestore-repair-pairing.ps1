@@ -8,6 +8,49 @@ function Find-Iloader {
     Get-ChildItem "$env:LOCALAPPDATA\iloader","$env:ProgramFiles\iloader","$env:LOCALAPPDATA\Programs\iloader" -Filter 'iloader.exe' -ErrorAction SilentlyContinue | Select-Object -First 1
 }
 
+function Refresh-Path {
+    $env:Path = [Environment]::GetEnvironmentVariable('Path','Machine') + ';' + [Environment]::GetEnvironmentVariable('Path','User') + ";$env:LOCALAPPDATA\Microsoft\WindowsApps"
+}
+
+function Ensure-Winget {
+    Refresh-Path
+    if (Get-Command winget -ErrorAction SilentlyContinue) { return }
+    Write-Host "winget no esta instalado; intentando instalarlo..." -ForegroundColor Yellow
+
+    # Metodo 1: registrar el App Installer que ya trae Windows 10/11 pero sin registrar
+    try {
+        Add-AppxPackage -RegisterByFamilyName -MainPackage Microsoft.DesktopAppInstaller_8wekyb3d8bbwe -ErrorAction Stop
+        Refresh-Path
+    } catch { Write-Host "  metodo 1 (registrar App Installer) no valio: $($_.Exception.Message)" }
+    if (Get-Command winget -ErrorAction SilentlyContinue) { Write-Host "winget listo." -ForegroundColor Green; return }
+
+    # Metodo 2: modulo oficial Microsoft.WinGet.Client + Repair-WinGetPackageManager
+    try {
+        Install-PackageProvider -Name NuGet -MinimumVersion 2.8.5.201 -Force -Scope CurrentUser | Out-Null
+        Install-Module Microsoft.WinGet.Client -Force -Scope CurrentUser -Repository PSGallery -ErrorAction Stop
+        Import-Module Microsoft.WinGet.Client
+        Repair-WinGetPackageManager -AllUsers -ErrorAction Stop
+        Refresh-Path
+    } catch { Write-Host "  metodo 2 (modulo WinGet.Client) no valio: $($_.Exception.Message)" }
+    if (Get-Command winget -ErrorAction SilentlyContinue) { Write-Host "winget listo." -ForegroundColor Green; return }
+
+    # Metodo 3: descargar el msixbundle oficial + VCLibs (aka.ms/getwinget)
+    try {
+        $tmp = Join-Path $env:TEMP 'winget-setup'
+        New-Item -ItemType Directory -Force $tmp | Out-Null
+        $vc = Join-Path $tmp 'VCLibs.appx'
+        $bundle = Join-Path $tmp 'winget.msixbundle'
+        Invoke-WebRequest 'https://aka.ms/Microsoft.VCLibs.x64.14.00.Desktop.appx' -OutFile $vc -UseBasicParsing
+        Invoke-WebRequest 'https://aka.ms/getwinget' -OutFile $bundle -UseBasicParsing
+        Add-AppxPackage -Path $vc -ErrorAction SilentlyContinue
+        Add-AppxPackage -Path $bundle -ErrorAction Stop
+        Refresh-Path
+    } catch { Write-Host "  metodo 3 (msixbundle) no valio: $($_.Exception.Message)" }
+    if (Get-Command winget -ErrorAction SilentlyContinue) { Write-Host "winget listo." -ForegroundColor Green; return }
+
+    throw "No he podido instalar winget. Instala 'App Installer' desde Microsoft Store (o https://aka.ms/getwinget), cierra y abre PowerShell y reintenta."
+}
+
 function Test-Url($url) {
     $h = ([uri]$url).Host
     $r = [ordered]@{ Url = $url; DNS = 'FALLA'; TCP443 = '-'; HTTP = '-'; IP = '' }
@@ -66,9 +109,7 @@ Paso "1/4 Driver Apple Mobile Device Support"
 if (Get-Service -Name 'Apple Mobile Device Service' -ErrorAction SilentlyContinue) {
     Write-Host "Ya instalado."
 } else {
-    if (-not (Get-Command winget -ErrorAction SilentlyContinue)) {
-        throw "No hay winget. Instala 'App Installer' desde Microsoft Store y reintenta."
-    }
+    Ensure-Winget
     winget install --id Apple.AppleMobileDeviceSupport -e --accept-package-agreements --accept-source-agreements
     Start-Sleep 3
     if (-not (Get-Service -Name 'Apple Mobile Device Service' -ErrorAction SilentlyContinue)) {

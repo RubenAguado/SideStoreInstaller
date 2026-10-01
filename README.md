@@ -9,7 +9,7 @@ Script de PowerShell todo-en-uno para **Windows 10/11** que regenera el *pairing
 | Paso | Acción |
 |---|---|
 | **0/4** | Comprueba las URLs que usa SideStore (`sidestore.io`, `sidestore.xyz`, `docs`, `apps`, servidores *anisette*, `cdn.altstore.io`, `iloader.app`, GitHub...) y para cada una distingue **DNS / conexión TCP 443 / HTTP**, para saber si un dominio está muerto, bloqueado por tu ISP/DNS o simplemente caído. |
-| **1/4** | Instala el driver *Apple Mobile Device Support* con `winget` (sin él Windows no ve el iPad por USB). |
+| **1/4** | Instala el driver *Apple Mobile Device Support* con `winget` (sin él Windows no ve el iPad por USB). Si falta `winget`, lo instala antes. |
 | **2/4** | Descarga la última release de iloader desde GitHub (`iloader-windows-x64.msi`) y la instala. |
 | **3/4** | Espera a que el iPad aparezca por USB. |
 | **4/4** | Abre iloader y te guía, con una pausa por paso, en los 4 clics que no se pueden automatizar. |
@@ -57,7 +57,7 @@ No toca iCloud ni otros programas de Apple. El script **no se borra**. Si algún
 ## Requisitos
 
 - Windows 10/11 con PowerShell 5.1 o superior.
-- [`winget`](https://learn.microsoft.com/windows/package-manager/) (App Installer).
+- [`winget`](https://learn.microsoft.com/windows/package-manager/): si no está, el script intenta instalarlo solo (registrando App Installer, con el módulo `Microsoft.WinGet.Client` o con el `msixbundle` oficial de `aka.ms/getwinget`).
 - Cable USB y un iPhone/iPad con código de acceso.
 - Conexión a Internet.
 
