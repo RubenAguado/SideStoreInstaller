@@ -1,0 +1,5 @@
+*.msi
+*.exe
+*.log
+.env
+.env.*
