@@ -6,14 +6,15 @@ También sirve para **regenerar el pairing file** cuando SideStore lo pide otra 
 
 ## Uso
 
-1. Descarga [`sidestore-installer.ps1`](sidestore-installer.ps1).
-2. Ejecútalo (se reabre solo como administrador):
+**Doble clic en [`Instalar-SideStore.cmd`](Instalar-SideStore.cmd).** Pide permisos de administrador (acepta el aviso de Windows), salta la política de ejecución de PowerShell y lanza el instalador. Si el `.cmd` está solo (sin el `.ps1` al lado), descarga el script de GitHub automáticamente, así que basta con bajar ese único archivo.
 
-   ```powershell
-   powershell -ExecutionPolicy Bypass -File .\sidestore-installer.ps1
-   ```
+Alternativas:
 
-   O clic derecho → *Ejecutar con PowerShell*. Sin parámetros muestra un menú.
+```powershell
+powershell -ExecutionPolicy Bypass -File .\sidestore-installer.ps1
+```
+
+o clic derecho sobre el `.ps1` → *Ejecutar con PowerShell* (también se reabre como administrador). Sin parámetros muestra un menú.
 
 | Modo | Qué hace |
 |---|---|
