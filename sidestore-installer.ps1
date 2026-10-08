@@ -252,7 +252,8 @@ function Install-DriverApple {
         if ($m.Winget -and -not $hayWinget) { continue }
         Write-Host "Probando: $($m.Nombre)..." -ForegroundColor Cyan
         try { [void](& $m.Accion) } catch { Aviso "  no valio: $($_.Exception.Message)" }
-        Start-Sleep 4
+        # El servicio tarda unos segundos en registrarse tras instalar: esperar antes de dar el metodo por fallido.
+        for ($i = 0; $i -lt 15 -and -not (Test-AppleServicio); $i++) { Start-Sleep 2 }
         if (Test-AppleServicio) {
             Start-AppleServicio
             Set-Estado 'apple' $true
@@ -534,6 +535,15 @@ function Invoke-Main {
         return
     }
 
+    # winget escribe UTF-8; sin esto la consola (OEM) muestra las tildes rotas (Versi + simbolos raros).
+    $codifAntes = $null
+    try {
+        $codifAntes = [Console]::OutputEncoding
+        $utf8 = New-Object Text.UTF8Encoding $false
+        [Console]::OutputEncoding = $utf8
+        $OutputEncoding = $utf8
+    } catch { }
+
     $logDir = Join-Path $script:Dir 'logs'
     New-Item -ItemType Directory -Force $logDir | Out-Null
     $log = Join-Path $logDir ("instalador-{0:yyyyMMdd-HHmmss}.log" -f (Get-Date))
@@ -555,6 +565,7 @@ function Invoke-Main {
         Aviso 'Puedes relanzar el script: los pasos ya hechos se detectan y se saltan.'
     } finally {
         if ($transcribiendo) { try { Stop-Transcript | Out-Null } catch { } }
+        if ($codifAntes) { try { [Console]::OutputEncoding = $codifAntes } catch { } }
         [void](Read-Host "`nEnter para cerrar")
     }
 }
