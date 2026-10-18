@@ -26,13 +26,15 @@ o clic derecho sobre el `.ps1` → *Ejecutar con PowerShell* (también se reabre
 
 | Paso | Acción |
 |---|---|
-| **1/6** | Comprueba Windows (64 bits, no Win10 ARM) y las URLs de SideStore/iloader/GitHub/Apple (DNS, TCP 443, HTTP) para distinguir dominio muerto, bloqueo de ISP o caída. |
+| **1/6** | Comprueba Windows (64 bits, no Win10 ARM), las URLs de SideStore/iloader/GitHub/Apple (DNS, TCP 443, HTTP) y **todos los servidores anisette** de la [lista oficial](https://github.com/SideStore/anisette-servers/blob/main/servers.json) (`/v3/client_info`, indicando si son Windows o Mac). |
 | **2/6** | Checklist del iPhone/iPad: código de acceso, Wi-Fi, **LocalDevVPN** instalada y conectada, Apple ID. Pregunta tu versión de iOS para adaptar los pasos finales. |
 | **3/6** | Instala el driver USB de Apple (servicio *Apple Mobile Device Service*). Prueba en orden: `winget` iTunes → `winget` Apple Mobile Device Support → iTunes directo de apple.com → Apple Devices (Store). Si falta `winget`, lo instala. |
-| **4/6** | Descarga e instala la última release oficial de iloader (valida que sea un MSI real). |
+| **4/6** | Instala la última release oficial de iloader (valida que sea un MSI real). **Si ya hay una versión vieja instalada, la actualiza**: las anteriores a la 2.3.8 fallan al iniciar sesión con Apple (`-80045`, 503). |
 | **5/6** | Espera al dispositivo por USB. |
 | **6/6** | Abre iloader y te guía: iniciar sesión → elegir dispositivo → **SideStore (Stable)**. iloader coloca el pairing file solo. Después, pasos en el iPhone/iPad: confiar en el perfil, Modo desarrollador (iOS 16+), conectar LocalDevVPN, abrir SideStore, refrescar. |
 | **Final** | Pregunta si funciona; con `s` desinstala iloader y los drivers. |
+
+En cualquier paso puedes escribir `e` en lugar de Enter para ver la **ayuda de errores** (incluido `-80045`) y reintentar ese paso.
 
 Cada ejecución guarda un log en `%LOCALAPPDATA%\SideStoreInstaller\logs`. Si falla, el script no se cierra: muestra el error y se puede relanzar (los pasos hechos se saltan).
 
@@ -42,6 +44,13 @@ Quita iloader (y su carpeta de datos) y, solo si **los instaló este script** (o
 
 ## Si sigue fallando
 
+- **`Auth error -80045: This action cannot be completed at this time`** (falla al iniciar sesión con el Apple ID; Apple cambió su autenticación a mediados de octubre de 2026):
+  1. Usa **iloader 2.3.8 o superior** (el script lo actualiza solo). Los servidores anisette personalizados ya no funcionan; iloader usa los de su propia lista.
+  2. En iloader: *Settings → Reset Anisette State* y vuelve a iniciar sesión.
+  3. Con 2FA, usa el código de un **dispositivo de confianza** (el SMS falla de momento).
+  4. No reintentes muchas veces seguidas: Apple limita los intentos (429/503). Espera un rato.
+  5. Prueba otra red (p. ej. datos del móvil) u otro Apple ID. Algunas cuentas/IP siguen fallando aunque todo esté bien; es del lado de Apple.
+  6. Si el error sale **dentro de SideStore** (iPhone): usa la versión *Nightly* y, según la comunidad ([SideStore#1652](https://github.com/SideStore/SideStore/issues/1652)), en *Settings → Anisette Client Configuration* pon el *client info* de un servidor Windows. El script muestra el valor actual en el paso 1 y en la ayuda de errores.
 - **iloader no ve el dispositivo / error `usbmuxd`**: desinstala iTunes y Apple Mobile Device Support y prueba solo con *Apple Devices* de la Microsoft Store (o al revés: iTunes de apple.com). Cambia de cable/puerto y desbloquea el dispositivo.
 - **`Could not determine this device's UDID`**: en SideStore, *Ajustes → Advanced → Reset pairing file*, reinicia y repite con `-Modo Pairing`.
 - **`InvalidPairing (rppairing UDID not found)`**: `-Modo Pairing` con el dispositivo por USB. En iOS 17+ el pairing caduca solo cada cierto tiempo.

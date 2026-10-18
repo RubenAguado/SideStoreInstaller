@@ -152,11 +152,11 @@ function Test-Red {
         'https://docs.sidestore.io',
         'https://apps.sidestore.io',
         'https://cdn.altstore.io',
-        'https://ani.sidestore.io',
+        'https://raw.githubusercontent.com/SideStore/anisette-servers/main/servers.json',
         'https://www.apple.com/itunes/download/win64'
     )
     $res = foreach ($u in $urls) { Test-Url $u }
-    $res | Format-Table Url, IP, DNS, TCP443, HTTP -AutoSize | Out-Host
+    Write-Host (($res | Format-Table Url, IP, DNS, TCP443, HTTP -AutoSize | Out-String -Width 200).TrimEnd())
     $malas = @($res | Where-Object { $_.DNS -ne 'ok' -or $_.TCP443 -ne 'ok' -or $_.HTTP -notmatch '^[23]' })
     if (-not $malas) { Ok 'Todas las URLs responden.'; return }
     Aviso 'URLs con problemas:'
@@ -171,6 +171,68 @@ function Test-Red {
         if (-not (Confirmar 'Continuar igualmente?' $false)) { throw 'Cancelado: sin acceso a GitHub.' }
     } else {
         Aviso 'Si un dominio de SideStore falla, SideStore/iloader usan alternativas (p.ej. otro servidor anisette en los ajustes de iloader).'
+    }
+}
+
+# Lista oficial: https://github.com/SideStore/anisette-servers/blob/main/servers.json
+function Get-ServidoresAnisette {
+    try {
+        $r = Invoke-WebRequest 'https://raw.githubusercontent.com/SideStore/anisette-servers/main/servers.json' -UseBasicParsing -TimeoutSec 20
+        $lista = @(($r.Content | ConvertFrom-Json).servers | Where-Object { $_.address })
+        if ($lista.Count -gt 0) { return $lista }
+    } catch { Aviso "No pude leer la lista oficial de servidores anisette ($($_.Exception.Message)); uso una lista minima." }
+    return @(
+        [pscustomobject]@{ name = 'SideStore';                address = 'https://ani.sidestore.io' },
+        [pscustomobject]@{ name = 'SideStore (Windows ADI)';  address = 'https://win.ani.sidestore.io' },
+        [pscustomobject]@{ name = 'jkcoxson (Windows ADI)';   address = 'https://ani.jkcoxson.com' },
+        [pscustomobject]@{ name = 'StikStore';                address = 'https://ani2.stikstore.app' }
+    )
+}
+
+function Test-Anisette {
+    Write-Host "`nServidores anisette (lista oficial de SideStore), prueba de /v3/client_info:" -ForegroundColor Cyan
+    $servidores = @(Get-ServidoresAnisette)
+    Add-Type -AssemblyName System.Net.Http
+    $hc = New-Object System.Net.Http.HttpClient
+    $hc.Timeout = [TimeSpan]::FromSeconds(10)
+    $items = foreach ($s in $servidores) {
+        $url = ([string]$s.address).TrimEnd('/') + '/v3/client_info'
+        [pscustomobject]@{ Nombre = [string]$s.name; Servidor = [string]$s.address; Estado = 'FALLA'; Tipo = ''; Info = $null; Tarea = $hc.GetAsync($url) }
+    }
+    try { [void][Threading.Tasks.Task]::WaitAll([Threading.Tasks.Task[]]@($items | ForEach-Object { $_.Tarea }), 15000) } catch { }
+    foreach ($i in $items) {
+        $t = $i.Tarea
+        if ($t.Status -eq 'RanToCompletion') {
+            $codigo = [int]$t.Result.StatusCode
+            if ($codigo -eq 200) {
+                $i.Estado = 'respuesta rara'
+                try {
+                    $o = $t.Result.Content.ReadAsStringAsync().Result | ConvertFrom-Json
+                    if ($o.client_info) {
+                        $i.Estado = 'OK'
+                        $i.Info = $o
+                        $i.Tipo = if ($o.client_info -match 'Windows') { 'Windows' } elseif ($o.client_info -match 'Mac') { 'Mac' } else { 'otro' }
+                    }
+                } catch { }
+            } else { $i.Estado = "HTTP $codigo" }
+        } elseif ($t.Status -eq 'Faulted') { $i.Estado = 'FALLA (DNS/conexion)' }
+        else { $i.Estado = 'TIMEOUT' }
+    }
+    $hc.Dispose()
+    Write-Host (($items | Format-Table Nombre, Servidor, Estado, Tipo -AutoSize | Out-String -Width 200).TrimEnd())
+
+    $vivos = @($items | Where-Object { $_.Estado -eq 'OK' })
+    $win = $vivos | Where-Object { $_.Tipo -eq 'Windows' } | Select-Object -First 1
+    if ($win) {
+        $script:ClientInfoWin = [string]$win.Info.client_info
+        $script:UserAgentWin = [string]$win.Info.user_agent
+    }
+    if ($vivos.Count -eq 0) {
+        Aviso 'Ningun servidor anisette responde: revisa tu conexion, DNS o VPN. Sin ellos no se puede iniciar sesion con el Apple ID.'
+    } else {
+        Ok "$($vivos.Count) de $($items.Count) servidores anisette responden."
+        if (-not $win) { Aviso 'Ninguno de tipo Windows responde ahora mismo; son los que Apple acepta tras sus cambios de octubre.' }
+        Write-Host 'iloader (2.3.8 o superior) elige el servidor solo desde su propia lista; los servidores personalizados ya no funcionan.'
     }
 }
 
@@ -289,9 +351,50 @@ function Find-Iloader {
     return $null
 }
 
+function ConvertTo-Version([string]$s) {
+    if ($s -match '(\d+(\.\d+){1,3})') { try { return [version]$Matches[1] } catch { } }
+    return $null
+}
+
+# Etiqueta de la ultima release (p.ej. v2.3.10) o $null si no se pudo consultar.
+function Get-IloaderUltima(
+    [string]$Api = 'https://api.github.com/repos/nab138/iloader/releases/latest',
+    [string]$Web = 'https://github.com/nab138/iloader/releases/latest') {
+    try {
+        $rel = Invoke-RestMethod $Api -Headers @{ 'User-Agent' = 'ps' } -TimeoutSec 20
+        if ($rel.tag_name) { return [string]$rel.tag_name }
+    } catch { }
+    # Sin API (limite de peticiones): la pagina /releases/latest redirige a /releases/tag/<version>.
+    try {
+        [void](Invoke-WebRequest $Web -UseBasicParsing -MaximumRedirection 0 -ErrorAction Stop)
+    } catch {
+        try {
+            $h = $_.Exception.Response.Headers
+            $loc = [string]$h.Location              # PowerShell 7 (HttpResponseHeaders)
+            if (-not $loc) { $loc = [string]$h['Location'] }   # Windows PowerShell 5.1 (WebHeaderCollection)
+            if ($loc -match '/tag/(v?[\d.]+)') { return $Matches[1] }
+        } catch { }
+    }
+    return $null
+}
+
+function Get-IloaderVersion {
+    $a = Get-ItemProperty $script:Claves -ErrorAction SilentlyContinue | Where-Object { $_.DisplayName -match '^iloader' } | Select-Object -First 1
+    if ($a) { return ConvertTo-Version ([string]$a.DisplayVersion) }
+    return $null
+}
+
 function Install-Iloader {
     $exe = Find-Iloader
-    if ($exe) { Ok "iloader ya instalado: $($exe.FullName)"; return $exe }
+    $ultima = ConvertTo-Version (Get-IloaderUltima)
+    if ($exe) {
+        $inst = Get-IloaderVersion
+        if (-not $ultima) { Ok "iloader ya instalado: $($exe.FullName) (no pude comprobar si hay version nueva)"; return $exe }
+        if ($inst -and $inst -ge $ultima) { Ok "iloader $inst ya esta al dia."; return $exe }
+        $txt = if ($inst) { "$inst" } else { 'desconocida' }
+        Aviso "El iloader instalado (version $txt) esta desactualizado (ultima: $ultima). Las versiones antiguas fallan al iniciar sesion (-80045 / 503). Actualizando..."
+        Get-Process iloader -ErrorAction SilentlyContinue | Stop-Process -Force
+    }
 
     $msi = Join-Path $env:TEMP 'iloader-windows-x64.msi'
     $directa = 'https://github.com/nab138/iloader/releases/latest/download/iloader-windows-x64.msi'
@@ -310,13 +413,19 @@ function Install-Iloader {
     New-Item -ItemType Directory -Force $script:Dir | Out-Null
     Write-Host 'Instalando iloader...'
     $p = Start-Process msiexec.exe -ArgumentList "/i `"$msi`" /qn /norestart /l*v `"$log`"" -Wait -PassThru
+    if ($p.ExitCode -eq 1638) {
+        Aviso 'Hay otra version instalada que no se actualiza en caliente; la desinstalo y reinstalo.'
+        Remove-Programa '^iloader' 'iloader'
+        $p = Start-Process msiexec.exe -ArgumentList "/i `"$msi`" /qn /norestart /l*v `"$log`"" -Wait -PassThru
+    }
     if ($p.ExitCode -notin 0, 3010) { throw "msiexec devolvio el codigo $($p.ExitCode). Revisa el log: $log" }
 
     $exe = Find-Iloader
     if (-not $exe) { throw "iloader se instalo pero no encuentro iloader.exe. Abrelo desde el menu Inicio." }
     Remove-Item $msi -Force -ErrorAction SilentlyContinue
     Set-Estado 'iloader' $true
-    Ok "iloader instalado: $($exe.FullName)"
+    $v = Get-IloaderVersion
+    Ok "iloader $v instalado: $($exe.FullName)"
     return $exe
 }
 
@@ -347,10 +456,41 @@ function Wait-Dispositivo {
 }
 
 # ---------------------------------------------------------------- guias
+function Show-AyudaErrores {
+    Write-Host @'
+
+--- AYUDA CON ERRORES ---
+Error -80045 "This action cannot be completed at this time" (Apple rechaza el inicio de sesion):
+  1. Usa iloader 2.3.8 o superior (este script ya lo actualiza solo). Los servidores anisette
+     personalizados ya no funcionan: iloader usa los de su propia lista.
+  2. En iloader: Settings > 'Reset Anisette State' y vuelve a iniciar sesion.
+  3. Con 2FA, pide el codigo en un dispositivo de confianza (segun iloader, el SMS falla de momento).
+  4. No reintentes muchas veces seguidas: Apple limita los intentos (errores 429/503). Espera un rato.
+  5. Prueba otra red (p.ej. datos del movil compartidos) u otro Apple ID. Algunas cuentas/IP siguen
+     fallando aunque todo este bien: es del lado de Apple y suele resolverse en dias.
+  6. Si el error sale dentro de SideStore (iPhone): usa la version Nightly y, segun la comunidad
+     (SideStore issue 1652), en Settings > Anisette Client Configuration pon el client info de un
+     servidor Windows de la lista de arriba.
+'@
+    if ($script:ClientInfoWin) {
+        Write-Host "     Client info : $($script:ClientInfoWin)"
+        Write-Host "     User agent  : $($script:UserAgentWin)"
+    }
+    Write-Host @'
+Otros errores:
+  - 'usbmuxd' / no ve el dispositivo: otro cable o puerto USB; si sigue, modo Limpiar y volver a Instalar.
+  - 'UDID' en SideStore: relanza el script con -Modo Pairing.
+'@
+}
+
 function Show-Pasos($lista) {
     for ($n = 0; $n -lt $lista.Count; $n++) {
         Write-Host "`nPaso $($n + 1)/$($lista.Count): $($lista[$n])" -ForegroundColor Yellow
-        Pausa 'Cuando lo hayas hecho, pulsa Enter'
+        do {
+            $r = Read-Host 'Pulsa Enter cuando lo hayas hecho (escribe e si te sale un error)'
+            $fallo = ($r -match '^[eE]')
+            if ($fallo) { Show-AyudaErrores }
+        } while ($fallo)
     }
 }
 
@@ -465,6 +605,7 @@ function Invoke-Instalar {
     Paso '1/6 Comprobaciones'
     Test-Sistema
     Test-Red
+    Test-Anisette
 
     Paso '2/6 Preparar el iPhone/iPad'
     Show-GuiaPrevia
