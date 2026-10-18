@@ -479,15 +479,14 @@ Error -80045 "This action cannot be completed at this time":
   2. Con 2FA, usa el codigo de un dispositivo de confianza (segun iloader, el SMS falla de momento).
   3. Cambia de red (datos del movil compartidos) y/o usa un Apple ID secundario: es lo que mas
      funciona cuando una cuenta o IP concreta sigue rechazada.
-  4. Si falla en SideStore (iPhone) pero no en iloader:
-     a) Instala la version Nightly (iloader > Installers > 'SideStore (Nightly)'); la Stable no trae
-        la correccion del 2FA (SideStore issues 1647 y 1658).
-     b) Ajustes > User Customizations > desactiva 'On-Device Anisette'.
-     c) Anisette Client Configuration (pestana Interactive) > pon el client info y el user agent de
-        abajo > 'Save Overrides' > cierra SideStore del todo y reabrelo > inicia sesion (una vez).
-        Fuente: SideStore issue 1665. Si da HTTP 404, alternativa: en 'Anisette Servers' elige
-        'Jkcoxson' (mac-ani.jkcoxson.com) con el client info por defecto (Windows con Windows, Mac
-        con Mac). El codigo de 6 digitos sale en el iPhone una sola vez: anotalo.
+  4. Si falla en SideStore (iPhone) pero no en iloader (receta que ha funcionado en pruebas reales
+     con la version Stable de SideStore, no hace falta la Nightly):
+     a) En SideStore: Ajustes > User Customizations > desactiva 'On-Device Anisette'.
+     b) Ajustes > 'Anisette Servers' > elige 'SideStore (Windows ADI)'.
+     c) Cierra SideStore del todo, reabrelo e inicia sesion (una sola vez). El codigo de 6 digitos
+        sale en el iPhone una sola vez: anotalo.
+     d) Si sigue fallando: pon a mano el client info y el user agent de abajo (Anisette Client
+        Configuration > pestana Interactive > Save Overrides) o prueba la version Nightly.
 '@
     if ($script:ClientInfoWin) {
         Write-Host "     Client info : $($script:ClientInfoWin)"
@@ -547,7 +546,8 @@ function Show-GuiaInstalacion([int]$Ios) {
         $pasos += "Ajustes > 'Privacidad y seguridad' > baja hasta el final > activa 'Modo desarrollador'. El dispositivo se reinicia; al volver, desbloquea y confirma 'Activar'."
     }
     $pasos += "Abre LocalDevVPN y pulsa 'Connect' (debe estar conectada cada vez que instales/refresques apps)."
-    $pasos += "Abre SideStore e inicia sesion con el mismo Apple ID que usaste en iloader."
+    $pasos += "Abre SideStore y, ANTES de iniciar sesion, ve a Ajustes > User Customizations y desactiva 'On-Device Anisette'. Luego Ajustes > 'Anisette Servers' y elige 'SideStore (Windows ADI)' (evita el error -80045 al iniciar sesion)."
+    $pasos += "Cierra SideStore del todo, reabrelo e inicia sesion con el mismo Apple ID que usaste en iloader (una sola vez; el codigo de 6 digitos sale en el iPhone una sola vez: anotalo)."
     $pasos += "Ve a 'My Apps' y toca el contador '7 DAYS' junto a SideStore para refrescarlo y terminar la configuracion. Si pregunta por revocar/crear certificado, responde 'Yes' / 'Refresh Now'."
     Show-Pasos $pasos
 }
@@ -867,19 +867,19 @@ function Show-Bloque([string]$Que, [string[]]$Pasos, [string[]]$No) {
 
 function Show-RecetaIphone {
     $pasos = @(
-        "Instala SideStore NIGHTLY: abre iloader, inicia sesion y en 'Installers' pulsa 'SideStore (Nightly)'. La version Stable no trae la correccion del 2FA.",
-        "En el iPhone: confia en el perfil (Ajustes > General > VPN y gestion de dispositivos) y conecta LocalDevVPN.",
-        "En SideStore: Ajustes > User Customizations > desactiva 'On-Device Anisette'.",
-        "En 'Anisette Client Configuration' (pestana Interactive) escribe:"
+        "Abre SideStore en el iPhone: Ajustes > User Customizations > desactiva 'On-Device Anisette'. Es el paso clave.",
+        "Ajustes > 'Anisette Servers' > elige 'SideStore (Windows ADI)'.",
+        "Cierra SideStore del todo (desde el selector de apps) y reabrelo.",
+        "Inicia sesion UNA vez. El codigo de 6 digitos sale en el iPhone una sola vez: anotalo antes de cerrarlo, y elige el codigo de dispositivo de confianza (no SMS).",
+        "Si sigue fallando: en 'Anisette Client Configuration' (pestana Interactive) escribe estos valores, pulsa 'Save Overrides' y repite los pasos 3 y 4:"
     )
-    Show-Bloque "Apple rechaza el login que hace SideStore dentro del iPhone, aunque iloader en el PC funcione. SideStore Nightly lo corrige, pero hay que decirle que se identifique como el servidor Windows." $pasos $null
+    Show-Bloque "Apple rechaza el login que hace SideStore dentro del iPhone, aunque iloader en el PC funcione. Lo que ha funcionado en pruebas reales, con la version Stable de SideStore (no hace falta la Nightly): no usar el anisette del propio iPhone y usar el servidor Windows ADI de SideStore." $pasos $null
     $ci = if ($script:ClientInfoWin) { $script:ClientInfoWin } else { '<PC> <Windows;6.2(0,0);9200> <com.apple.AuthKit/1 (com.apple.iTunes/12.12.4.1)>' }
     $ua = if ($script:UserAgentWin) { $script:UserAgentWin } else { 'akd/1.0 CFNetwork/808.1.4' }
     Write-Host "       Client Info : $ci" -ForegroundColor White
     Write-Host "       User Agent  : $ua" -ForegroundColor White
-    Write-Host "  5. Pulsa 'Save Overrides' y cierra SideStore del todo (desde el selector de apps)."
-    Write-Host "  6. Abre SideStore e inicia sesion UNA vez. El codigo de 6 digitos sale en el iPhone una sola vez: anotalo antes de cerrarlo, y elige el codigo de dispositivo de confianza (no SMS)."
-    Write-Host "  7. Si da error HTTP 404: en 'Anisette Servers' elige 'Jkcoxson' (mac-ani.jkcoxson.com) con el client info por defecto. Windows con Windows, Mac con Mac."
+    Write-Host "  6. Si da error HTTP 404, prueba en 'Anisette Servers' con 'Jkcoxson' y el client info por defecto (Windows con Windows, Mac con Mac)."
+    Write-Host "  7. Ultimo recurso: instala la version Nightly desde iloader (Installers > 'SideStore (Nightly)') y repite."
     Write-Host 'QUE NO HACER' -ForegroundColor Red
     Write-Host '  - No pruebes mas de 1 o 2 veces seguidas: Apple puede bloquear tu cuenta (error -20209).'
 }
@@ -915,7 +915,7 @@ function Show-Solucion([string]$Id, [string]$Donde) {
                 "En iloader cambia de servidor anisette (lista desplegable en Ajustes) y pulsa 'Restablecer estado de Anisette'.",
                 "Espera un buen rato antes de volver a probar.",
                 "Cambia de red (datos del movil compartidos) y prueba una vez.",
-                $(if ($Donde -eq 'iphone') { "En SideStore usa la version Nightly y la configuracion de anisette del apartado -80045 (iPhone)." } else { "Si pasa solo con tu Apple ID, prueba con otro." })
+                $(if ($Donde -eq 'iphone') { "En SideStore desactiva 'On-Device Anisette' y elige 'SideStore (Windows ADI)' en Ajustes > Anisette Servers." } else { "Si pasa solo con tu Apple ID, prueba con otro." })
             ) @("No reintentes seguido: Apple te limita mas.")
         }
         'password' {
@@ -930,7 +930,7 @@ function Show-Solucion([string]$Id, [string]$Donde) {
         '2fa' {
             Show-Bloque "Apple pide el codigo de verificacion, pero SideStore/iloader no lo procesa bien (error -22411, o el SMS falla)." @(
                 "Usa el codigo de un dispositivo de confianza, no el SMS.",
-                "En SideStore usa la version Nightly (la Stable tiene este fallo).",
+                "En SideStore: Ajustes > User Customizations > desactiva 'On-Device Anisette' y en 'Anisette Servers' elige 'SideStore (Windows ADI)'.",
                 "El codigo de 6 digitos aparece una sola vez en tu otro dispositivo Apple: anotalo antes de cerrarlo.",
                 "Cierra SideStore del todo y reabrelo antes de reintentar.",
                 "Si antes del codigo sale -80045, mira la opcion de -80045 de este menu."
