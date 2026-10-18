@@ -460,17 +460,21 @@ function Show-AyudaErrores {
     Write-Host @'
 
 --- AYUDA CON ERRORES ---
-Error -80045 "This action cannot be completed at this time" (Apple rechaza el inicio de sesion):
-  1. Usa iloader 2.3.8 o superior (este script ya lo actualiza solo). Los servidores anisette
-     personalizados ya no funcionan: iloader usa los de su propia lista.
-  2. En iloader: Settings > 'Reset Anisette State' y vuelve a iniciar sesion.
-  3. Con 2FA, pide el codigo en un dispositivo de confianza (segun iloader, el SMS falla de momento).
-  4. No reintentes muchas veces seguidas: Apple limita los intentos (errores 429/503). Espera un rato.
-  5. Prueba otra red (p.ej. datos del movil compartidos) u otro Apple ID. Algunas cuentas/IP siguen
-     fallando aunque todo este bien: es del lado de Apple y suele resolverse en dias.
-  6. Si el error sale dentro de SideStore (iPhone): usa la version Nightly y, segun la comunidad
-     (SideStore issue 1652), en Settings > Anisette Client Configuration pon el client info de un
-     servidor Windows de la lista de arriba.
+Error -80045 "This action cannot be completed at this time":
+  Es Apple rechazando el inicio de sesion (desde el 12-13 oct 2026). No lo arregla el PC ni este
+  script: depende de la cuenta y de la red. Con iloader 2.3.10 ya esta lo que se puede hacer.
+  IMPORTANTE: NO reintentes en bucle. Apple esta bloqueando cuentas por reintentos (error -20209).
+  Si sale -20209 la cuenta esta bloqueada: se desbloquea en https://iforgot.apple.com
+  Haz como mucho 1 o 2 intentos por configuracion, en este orden:
+  1. iloader > 'Restablecer estado de Anisette' (Reset Anisette State), elige un servidor de la
+     lista (prueba UNA vez uno Windows y UNA vez uno Mac) e inicia sesion.
+  2. Con 2FA, usa el codigo de un dispositivo de confianza (segun iloader, el SMS falla de momento).
+  3. Cambia de red (datos del movil compartidos) y/o usa un Apple ID secundario: es lo que mas
+     funciona cuando una cuenta o IP concreta sigue rechazada.
+  4. Si falla en SideStore (iPhone) pero no en iloader: Ajustes > User Customizations > desactiva
+     'On-Device Anisette' > Anisette Client Configuration (pestana Interactive) > pon el client info
+     y el user agent de abajo > 'Save Overrides' > cierra SideStore del todo y reabrelo > inicia
+     sesion. Fuente: SideStore issue 1665 (varios usuarios dicen que les funciona).
 '@
     if ($script:ClientInfoWin) {
         Write-Host "     Client info : $($script:ClientInfoWin)"

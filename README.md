@@ -44,13 +44,12 @@ Quita iloader (y su carpeta de datos) y, solo si **los instaló este script** (o
 
 ## Si sigue fallando
 
-- **`Auth error -80045: This action cannot be completed at this time`** (falla al iniciar sesión con el Apple ID; Apple cambió su autenticación a mediados de octubre de 2026):
-  1. Usa **iloader 2.3.8 o superior** (el script lo actualiza solo). Los servidores anisette personalizados ya no funcionan; iloader usa los de su propia lista.
-  2. En iloader: *Settings → Reset Anisette State* y vuelve a iniciar sesión.
-  3. Con 2FA, usa el código de un **dispositivo de confianza** (el SMS falla de momento).
-  4. No reintentes muchas veces seguidas: Apple limita los intentos (429/503). Espera un rato.
-  5. Prueba otra red (p. ej. datos del móvil) u otro Apple ID. Algunas cuentas/IP siguen fallando aunque todo esté bien; es del lado de Apple.
-  6. Si el error sale **dentro de SideStore** (iPhone): usa la versión *Nightly* y, según la comunidad ([SideStore#1652](https://github.com/SideStore/SideStore/issues/1652)), en *Settings → Anisette Client Configuration* pon el *client info* de un servidor Windows. El script muestra el valor actual en el paso 1 y en la ayuda de errores.
+- **`Auth error -80045: This action cannot be completed at this time`** (falla al iniciar sesión con el Apple ID). Es Apple rechazando el login desde el 12-13 de octubre de 2026; no depende del PC ni del script, sino de la cuenta y de la red. Algunas cuentas lo reciben con cualquier configuración ([iloader#928](https://github.com/nab138/iloader/issues/928)).
+  - ⚠️ **No reintentes en bucle.** Apple está bloqueando cuentas por reintentos (`-20209`). Si pasa, se desbloquea en [iforgot.apple.com](https://iforgot.apple.com). Haz como mucho 1-2 intentos por configuración.
+  1. Usa **iloader 2.3.8 o superior** (el script lo actualiza solo). En iloader: *Restablecer estado de Anisette* y prueba **una vez** un servidor Windows y **una vez** uno Mac de su lista (los personalizados ya no funcionan).
+  2. Con 2FA, usa el código de un **dispositivo de confianza** (el SMS falla de momento).
+  3. Cambia de red (datos del móvil compartidos) y/o usa un **Apple ID secundario**: es lo que más suele funcionar cuando una cuenta o IP sigue rechazada.
+  4. Si falla **dentro de SideStore** (iPhone) pero no en iloader: *Ajustes → User Customizations* → desactiva **On-Device Anisette** → *Anisette Client Configuration* (pestaña *Interactive*) → **Client Info** `<PC> <Windows;6.2(0,0);9200> <com.apple.AuthKit/1 (com.apple.iTunes/12.12.4.1)>` y **User Agent** `akd/1.0 CFNetwork/808.1.4` → *Save Overrides* → cierra SideStore del todo, reábrelo e inicia sesión. Varios usuarios confirman que funciona ([SideStore#1665](https://github.com/SideStore/SideStore/issues/1665)); el script muestra el valor vigente en el paso 1.
 - **iloader no ve el dispositivo / error `usbmuxd`**: desinstala iTunes y Apple Mobile Device Support y prueba solo con *Apple Devices* de la Microsoft Store (o al revés: iTunes de apple.com). Cambia de cable/puerto y desbloquea el dispositivo.
 - **`Could not determine this device's UDID`**: en SideStore, *Ajustes → Advanced → Reset pairing file*, reinicia y repite con `-Modo Pairing`.
 - **`InvalidPairing (rppairing UDID not found)`**: `-Modo Pairing` con el dispositivo por USB. En iOS 17+ el pairing caduca solo cada cierto tiempo.
