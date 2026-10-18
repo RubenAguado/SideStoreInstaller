@@ -8,6 +8,8 @@ También sirve para **regenerar el pairing file** cuando SideStore lo pide otra 
 
 **Doble clic en [`Instalar-SideStore.cmd`](Instalar-SideStore.cmd).** Pide permisos de administrador (acepta el aviso de Windows), salta la política de ejecución de PowerShell y lanza el instalador. Si el `.cmd` está solo (sin el `.ps1` al lado), descarga el script de GitHub automáticamente, así que basta con bajar ese único archivo.
 
+**¿Algo falla? Doble clic en [`Diagnosticar-SideStore.cmd`](Diagnosticar-SideStore.cmd)** (ver [Diagnóstico guiado](#diagnóstico-guiado)).
+
 Alternativas:
 
 ```powershell
@@ -21,6 +23,7 @@ o clic derecho sobre el `.ps1` → *Ejecutar con PowerShell* (también se reabre
 | `-Modo Instalar` *(menú opción 1)* | Instalación completa de SideStore. |
 | `-Modo Pairing` | Solo regenera el pairing file. |
 | `-Modo Limpiar` | Desinstala iloader y los componentes de Apple. |
+| `-Modo Diagnostico` | **¿Algo falla?** Revisa el PC, te pregunta qué te pasa y te explica cómo arreglarlo. |
 
 ## Qué hace el modo Instalar
 
@@ -37,6 +40,16 @@ o clic derecho sobre el `.ps1` → *Ejecutar con PowerShell* (también se reabre
 En cualquier paso puedes escribir `e` en lugar de Enter para ver la **ayuda de errores** (incluido `-80045`) y reintentar ese paso.
 
 Cada ejecución guarda un log en `%LOCALAPPDATA%\SideStoreInstaller\logs`. Si falla, el script no se cierra: muestra el error y se puede relanzar (los pasos hechos se saltan).
+
+## Diagnóstico guiado
+
+Pensado para cualquier usuario: no hace falta saber qué significa cada código. Tres pasos:
+
+1. **Revisión automática del PC** (marca ✔/⚠/✖ cada punto): versión de Windows, **hora del PC** (Apple rechaza el login si está desfasada), conexión con GitHub/Apple/anisette, driver USB de Apple, versión de **iloader** (¿antigua?), servidores anisette de la lista oficial y los **errores recientes del registro de iloader** (solo cuenta cuáles, no copia su contenido).
+2. **Arreglos con un clic** (siempre preguntando): sincronizar la hora, arrancar el servicio de Apple, instalar el driver, actualizar iloader.
+3. **Te pregunta qué te pasa** con frases normales (no con códigos) y, según tu respuesta y lo que encontró, te da **qué pasa → qué hacer → qué no hacer**. Cubre: `-80045` (en iloader o en SideStore/iPhone), `-20209` cuenta bloqueada, `503/429`, usuario o contraseña, verificación en dos pasos (`-22411`), UDID/pairing, VPN/Wi-Fi, iPhone no detectado, límites de apps/App IDs y app que no abre. Si el problema es el pairing file, te ofrece lanzar el modo Pairing.
+
+Al final guarda **`SideStore-Diagnostico.txt` en el Escritorio**: un informe para adjuntar si pides ayuda (no incluye tu Apple ID, contraseñas ni rutas personales).
 
 ## Limpieza
 

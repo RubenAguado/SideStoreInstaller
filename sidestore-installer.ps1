@@ -7,6 +7,7 @@
                     hasta tener SideStore funcionando. Es el modo por defecto.
     Modo Pairing  : solo regenera el pairing file (iOS actualizado, SideStore lo pide otra vez).
     Modo Limpiar  : desinstala iloader y los componentes de Apple.
+    Modo Diagnostico : revisa el PC, pregunta que te pasa y explica como arreglarlo (guarda un informe).
 
 .EXAMPLE
     powershell -ExecutionPolicy Bypass -File .\sidestore-installer.ps1
@@ -14,7 +15,7 @@
 #>
 [CmdletBinding()]
 param(
-    [ValidateSet('Instalar', 'Pairing', 'Limpiar')]
+    [ValidateSet('Instalar', 'Pairing', 'Limpiar', 'Diagnostico')]
     [string]$Modo
 )
 
@@ -189,8 +190,8 @@ function Get-ServidoresAnisette {
     )
 }
 
-function Test-Anisette {
-    Write-Host "`nServidores anisette (lista oficial de SideStore), prueba de /v3/client_info:" -ForegroundColor Cyan
+# Consulta /v3/client_info de cada servidor; devuelve una fila por servidor (sin imprimir nada).
+function Get-EstadoAnisette {
     $servidores = @(Get-ServidoresAnisette)
     Add-Type -AssemblyName System.Net.Http
     $hc = New-Object System.Net.Http.HttpClient
@@ -219,14 +220,21 @@ function Test-Anisette {
         else { $i.Estado = 'TIMEOUT' }
     }
     $hc.Dispose()
-    Write-Host (($items | Format-Table Nombre, Servidor, Estado, Tipo -AutoSize | Out-String -Width 200).TrimEnd())
-
-    $vivos = @($items | Where-Object { $_.Estado -eq 'OK' })
-    $win = $vivos | Where-Object { $_.Tipo -eq 'Windows' } | Select-Object -First 1
+    $win = @($items | Where-Object { $_.Estado -eq 'OK' -and $_.Tipo -eq 'Windows' }) | Select-Object -First 1
     if ($win) {
         $script:ClientInfoWin = [string]$win.Info.client_info
         $script:UserAgentWin = [string]$win.Info.user_agent
     }
+    return @($items)
+}
+
+function Test-Anisette {
+    Write-Host "`nServidores anisette (lista oficial de SideStore), prueba de /v3/client_info:" -ForegroundColor Cyan
+    $items = @(Get-EstadoAnisette)
+    Write-Host (($items | Format-Table Nombre, Servidor, Estado, Tipo -AutoSize | Out-String -Width 200).TrimEnd())
+
+    $vivos = @($items | Where-Object { $_.Estado -eq 'OK' })
+    $win = $vivos | Where-Object { $_.Tipo -eq 'Windows' } | Select-Object -First 1
     if ($vivos.Count -eq 0) {
         Aviso 'Ningun servidor anisette responde: revisa tu conexion, DNS o VPN. Sin ellos no se puede iniciar sesion con el Apple ID.'
     } else {
@@ -609,6 +617,463 @@ function Invoke-Limpieza {
     Aviso 'Si algun driver sigue apareciendo, reinicia el PC.'
 }
 
+# ---------------------------------------------------------------- diagnostico
+# Hallazgos de la revision automatica: Estado = OK | AVISO | ERROR | INFO
+function Add-Hallazgo([string]$Estado, [string]$Titulo, [string]$Detalle = '', [string]$Accion = '') {
+    [void]$script:Hallazgos.Add([pscustomobject]@{ Estado = $Estado; Titulo = $Titulo; Detalle = $Detalle; Accion = $Accion })
+    $marca = switch ($Estado) { 'OK' { '[ OK ]' } 'AVISO' { '[ !! ]' } 'ERROR' { '[ XX ]' } default { '[ -- ]' } }
+    $color = switch ($Estado) { 'OK' { 'Green' } 'AVISO' { 'Yellow' } 'ERROR' { 'Red' } default { 'Gray' } }
+    Write-Host "$marca $Titulo" -ForegroundColor $color
+    if ($Detalle) { Write-Host "       $Detalle" }
+}
+
+function Invoke-Comprobacion([string]$Nombre, [scriptblock]$Bloque) {
+    try { & $Bloque } catch { Add-Hallazgo 'INFO' "No he podido comprobar: $Nombre" $_.Exception.Message }
+}
+
+# Minutos de diferencia entre el reloj del PC y la hora que dicen servidores de Internet ($null si no se pudo medir).
+function Get-DesfaseHora([string[]]$Fuentes = @('https://www.apple.com', 'https://www.microsoft.com', 'https://github.com')) {
+    foreach ($u in $Fuentes) {
+        try {
+            $r = Invoke-WebRequest $u -UseBasicParsing -Method Head -TimeoutSec 15
+            $txt = [string]$r.Headers['Date']
+            if (-not $txt) { continue }
+            $remota = [DateTimeOffset]::Parse($txt, [Globalization.CultureInfo]::InvariantCulture)
+            return [math]::Abs(([DateTimeOffset]::UtcNow - $remota).TotalMinutes)
+        } catch { }
+    }
+    return $null
+}
+
+function Sync-HoraPc {
+    $antes = $ErrorActionPreference
+    $ErrorActionPreference = 'Continue'
+    try {
+        Start-Service w32time -ErrorAction SilentlyContinue
+        $o = (& w32tm /resync /force 2>&1 | Out-String).Trim()
+        if ($o) { Write-Host $o }
+    } catch { Aviso "No pude sincronizar la hora: $($_.Exception.Message)" }
+    finally { $ErrorActionPreference = $antes }
+}
+
+# Errores conocidos que iloader deja escritos en su registro (solo se cuentan, nunca se copia el texto).
+function Get-PatronesIloader {
+    @(
+        @{ Id = '80045';    Texto = 'error -80045 (Apple rechaza el inicio de sesion)';    Regex = '-80045|cannot be completed at this time' },
+        @{ Id = '20209';    Texto = 'error -20209 (cuenta de Apple bloqueada)';             Regex = '-20209|locked for security' },
+        @{ Id = '503';      Texto = 'errores 503/429 (servidor saturado o limitando)';      Regex = 'Temporarily Unavailable|HTTP[^\r\n]{0,12}503|503 Service|Too Many Requests|HTTP[^\r\n]{0,12}429' },
+        @{ Id = 'password'; Texto = 'usuario o contrasena rechazados';                      Regex = '-20101|Incorrect Apple ID' },
+        @{ Id = '2fa';      Texto = 'error -22411 (verificacion en dos pasos)';             Regex = '-22411' },
+        @{ Id = 'udid';     Texto = 'problemas con el pairing file / UDID';                 Regex = 'InvalidPairing|rppairing UDID|determine this device' },
+        @{ Id = 'usb';      Texto = 'iloader no pudo hablar con el servicio USB (usbmuxd)'; Regex = 'usbmuxd' },
+        @{ Id = 'limite';   Texto = 'limite de apps / App IDs / certificados';              Regex = 'Maximum certificates|not enough app ?ids|cannot register more than 10' }
+    )
+}
+
+function Get-PistasIloader([string]$Dir = (Join-Path $env:APPDATA 'me.nabdev.iloader\logs'), [int]$Dias = 7) {
+    $res = @()
+    if (-not (Test-Path $Dir)) { return $res }
+    $texto = ''
+    $archivos = Get-ChildItem $Dir -File -ErrorAction SilentlyContinue |
+        Where-Object { $_.LastWriteTime -gt (Get-Date).AddDays(-$Dias) } |
+        Sort-Object LastWriteTime -Descending | Select-Object -First 3
+    foreach ($f in $archivos) {
+        try { $texto += ((Get-Content $f.FullName -Tail 3000 -ErrorAction Stop) -join "`n") + "`n" } catch { }
+    }
+    if (-not $texto) { return $res }
+    foreach ($p in (Get-PatronesIloader)) {
+        $n = ([regex]::Matches($texto, $p.Regex, 'IgnoreCase')).Count
+        if ($n -gt 0) { $res += [pscustomobject]@{ Id = $p.Id; Texto = $p.Texto; Veces = $n } }
+    }
+    return $res
+}
+
+# ---- comprobaciones automaticas
+function Test-DiagSistema {
+    $v = [Environment]::OSVersion.Version
+    $arm = ($env:PROCESSOR_ARCHITECTURE -eq 'ARM64') -or ($env:PROCESSOR_ARCHITEW6432 -eq 'ARM64')
+    if (-not [Environment]::Is64BitOperatingSystem) {
+        Add-Hallazgo 'ERROR' 'Tu Windows es de 32 bits' 'iloader solo funciona en Windows de 64 bits.'
+    } elseif ($arm -and $v.Build -lt 22000) {
+        Add-Hallazgo 'ERROR' 'Windows 10 en ARM no esta soportado' 'Usa otro PC o Windows 11.'
+    } else {
+        Add-Hallazgo 'OK' "Windows compatible (version $v, 64 bits)"
+    }
+}
+
+function Test-DiagHora {
+    $min = Get-DesfaseHora
+    if ($null -eq $min) {
+        Add-Hallazgo 'INFO' 'No he podido comprobar la hora del PC' 'Sin conexion a los servidores de hora.'
+    } elseif ($min -gt 3) {
+        Add-Hallazgo 'AVISO' ("La hora de tu PC esta desfasada unos {0:N0} minutos" -f $min) 'Apple rechaza los inicios de sesion si la hora no es correcta.' 'Sincroniza la hora de Windows.'
+        $script:Arreglos += 'hora'
+    } else {
+        Add-Hallazgo 'OK' 'La hora de tu PC es correcta'
+    }
+}
+
+function Test-DiagRed {
+    $destinos = @(
+        @{ Nombre = 'GitHub (descarga de iloader)'; Url = 'https://github.com/nab138/iloader' },
+        @{ Nombre = 'Servidor de login de Apple';   Url = 'https://gsa.apple.com' },
+        @{ Nombre = 'Descarga de Apple (iTunes)';   Url = 'https://www.apple.com/itunes/download/win64' },
+        @{ Nombre = 'Lista de servidores anisette'; Url = 'https://raw.githubusercontent.com/SideStore/anisette-servers/main/servers.json' },
+        @{ Nombre = 'Web de SideStore';             Url = 'https://sidestore.io' }
+    )
+    foreach ($d in $destinos) {
+        $r = Test-Url $d.Url
+        if ($r.DNS -eq 'ok' -and $r.TCP443 -eq 'ok') {
+            Add-Hallazgo 'OK' "Conexion con: $($d.Nombre)"
+        } else {
+            $why = if ($r.DNS -ne 'ok') { 'El nombre no se resuelve: DNS mal o bloqueado (Pi-hole, DNS del ISP).' }
+                   else { 'Resuelve pero no conecta: bloqueo del ISP/firewall o servidor caido.' }
+            Add-Hallazgo 'ERROR' "Sin conexion con: $($d.Nombre)" $why 'Prueba otro DNS (1.1.1.1 u 8.8.8.8), otra red o una VPN.'
+        }
+    }
+}
+
+function Test-DiagDriver {
+    $s = Get-Service -Name $script:Servicio -ErrorAction SilentlyContinue
+    if (-not $s) {
+        Add-Hallazgo 'ERROR' 'Falta el driver USB de Apple' 'Sin el, el PC no puede ver el iPhone/iPad.' 'Ejecuta el modo Instalar (lo instala).'
+        $script:Arreglos += 'driver'
+        return
+    }
+    if ($s.Status -ne 'Running') {
+        Add-Hallazgo 'AVISO' 'El servicio USB de Apple esta parado' 'iloader no vera el dispositivo.' 'Arrancar el servicio.'
+        $script:Arreglos += 'servicio'
+    } else {
+        Add-Hallazgo 'OK' 'Driver USB de Apple instalado y en marcha'
+    }
+    if (Test-Dispositivo) { Add-Hallazgo 'OK' 'iPhone/iPad detectado por USB' }
+    else { Add-Hallazgo 'INFO' 'No veo ningun iPhone/iPad por USB ahora mismo' 'Si tu problema es en el PC: cable de datos, desbloqueado y toca Confiar.' }
+}
+
+function Test-DiagIloader {
+    $exe = Find-Iloader
+    if (-not $exe) {
+        Add-Hallazgo 'INFO' 'iloader no esta instalado en este PC' 'Solo hace falta para instalar SideStore o regenerar el pairing file.'
+        return
+    }
+    $inst = Get-IloaderVersion
+    $ult = ConvertTo-Version (Get-IloaderUltima)
+    $script:IloaderVersion = $inst
+    if (-not $inst) {
+        Add-Hallazgo 'INFO' 'iloader instalado (no pude leer su version)'
+    } elseif ($inst -lt [version]'2.3.8') {
+        Add-Hallazgo 'ERROR' "iloader $inst es demasiado antiguo" 'Las versiones anteriores a la 2.3.8 no pueden iniciar sesion con Apple (-80045 / 503).' 'Actualizar iloader.'
+        $script:Arreglos += 'iloader'
+    } elseif ($ult -and $inst -lt $ult) {
+        Add-Hallazgo 'AVISO' "iloader $inst no es la ultima version ($ult)" 'Apple cambia cosas cada pocos dias y las versiones nuevas lo siguen.' 'Actualizar iloader.'
+        $script:Arreglos += 'iloader'
+    } else {
+        Add-Hallazgo 'OK' "iloader $inst al dia"
+    }
+}
+
+function Test-DiagAnisette {
+    $items = @(Get-EstadoAnisette)
+    $script:EstadoAnisette = $items
+    $vivos = @($items | Where-Object { $_.Estado -eq 'OK' })
+    $win = @($vivos | Where-Object { $_.Tipo -eq 'Windows' })
+    if ($vivos.Count -eq 0) {
+        Add-Hallazgo 'ERROR' 'Ningun servidor anisette responde' 'Sin ellos no se puede iniciar sesion con el Apple ID.' 'Revisa tu conexion, DNS o VPN.'
+    } elseif ($win.Count -eq 0) {
+        Add-Hallazgo 'AVISO' "Responden $($vivos.Count) de $($items.Count) servidores anisette, pero ninguno de tipo Windows" 'Los de tipo Windows son los que Apple acepta ahora.'
+    } else {
+        Add-Hallazgo 'OK' "Responden $($vivos.Count) de $($items.Count) servidores anisette" ("Windows operativos: " + (($win | ForEach-Object { $_.Nombre }) -join ', '))
+    }
+}
+
+function Test-DiagRegistro {
+    $script:Pistas = @(Get-PistasIloader)
+    if ($script:Pistas.Count -eq 0) {
+        Add-Hallazgo 'INFO' 'El registro de iloader no muestra errores conocidos recientes' 'Normal si nunca lo has usado o no hay registro.'
+        return
+    }
+    foreach ($p in $script:Pistas) {
+        Add-Hallazgo 'AVISO' "iloader registro recientemente: $($p.Texto)" "Aparece $($p.Veces) vez/veces en sus ultimos registros."
+    }
+}
+
+function Invoke-Arreglos {
+    foreach ($a in @($script:Arreglos | Select-Object -Unique)) {
+        try {
+            switch ($a) {
+                'hora'     { if (Confirmar 'Sincronizo ahora la hora del PC?' $true) { Sync-HoraPc } }
+                'servicio' { if (Confirmar 'Arranco ahora el servicio USB de Apple?' $true) { Start-AppleServicio } }
+                'driver'   { if (Confirmar 'Instalo ahora el driver USB de Apple (tarda unos minutos)?' $true) { Install-DriverApple } }
+                'iloader'  { if (Confirmar 'Actualizo ahora iloader a la ultima version?' $true) { [void](Install-Iloader) } }
+            }
+        } catch { Aviso "No pude completar el arreglo '$a': $($_.Exception.Message)" }
+    }
+}
+
+# ---- preguntas
+function Read-Opcion([string]$Texto, [int]$Max) {
+    do { $r = Read-Host $Texto } until ($r -match '^\d+$' -and [int]$r -le $Max)
+    return [int]$r
+}
+
+function Get-Sintomas {
+    @(
+        @{ Id = '80045';    Txt = "Al iniciar sesion con mi Apple ID sale -80045 ('This action cannot be completed at this time')" },
+        @{ Id = '20209';    Txt = "Sale -20209 o 'cuenta bloqueada por seguridad'" },
+        @{ Id = '503';      Txt = "Sale 503, 429, 'Service Temporarily Unavailable' o 'Too many requests'" },
+        @{ Id = 'password'; Txt = "Dice que el usuario o la contrasena son incorrectos (-20101, 3002, 1102)" },
+        @{ Id = '2fa';      Txt = "Pide el codigo de verificacion pero no me deja ponerlo, sale -22411, o el SMS falla" },
+        @{ Id = 'udid';     Txt = "'Could not determine this device's UDID', 'InvalidPairing' o pide el pairing file" },
+        @{ Id = 'vpn';      Txt = "'You do not appear to be connected to VPN/Wi-Fi', error 27 o LocalDevVPN" },
+        @{ Id = 'usb';      Txt = "iloader no ve mi iPhone/iPad o sale un error de usbmuxd" },
+        @{ Id = 'limite';   Txt = "Limite de apps o App IDs, o 'Maximum certificates reached'" },
+        @{ Id = 'noabre';   Txt = "La app no abre, 'desarrollador no confiable' o hay que activar el Modo desarrollador" }
+    )
+}
+
+function Select-Sintoma {
+    $lista = @(Get-Sintomas)
+    Write-Host "`nQue es lo que te pasa? Elige el numero que mas se parezca:" -ForegroundColor Cyan
+    for ($i = 0; $i -lt $lista.Count; $i++) {
+        $pista = if ($script:Pistas -and (@($script:Pistas | Where-Object { $_.Id -eq $lista[$i].Id }).Count -gt 0)) { '   <-- lo he visto en el registro de iloader' } else { '' }
+        Write-Host ("  {0,2}) {1}{2}" -f ($i + 1), $lista[$i].Txt, $pista)
+    }
+    Write-Host ("  {0,2}) Otra cosa / no se (solo quiero la revision automatica)" -f ($lista.Count + 1))
+    Write-Host "   0) Salir"
+    $n = Read-Opcion "Elige 0-$($lista.Count + 1)" ($lista.Count + 1)
+    if ($n -eq 0 -or $n -gt $lista.Count) { return '' }
+    return $lista[$n - 1].Id
+}
+
+function Select-Donde {
+    Write-Host "`nDonde te sale el error?"
+    Write-Host '  1) En iloader, en el PC'
+    Write-Host '  2) En SideStore, en el iPhone/iPad'
+    if ((Read-Opcion 'Elige 1-2' 2) -eq 2) { return 'iphone' } else { return 'pc' }
+}
+
+# ---- soluciones (texto en lenguaje llano)
+function Show-Bloque([string]$Que, [string[]]$Pasos, [string[]]$No) {
+    Write-Host ''
+    Write-Host 'QUE PASA' -ForegroundColor Cyan
+    Write-Host "  $Que"
+    Write-Host 'QUE HACER (en este orden)' -ForegroundColor Green
+    for ($i = 0; $i -lt $Pasos.Count; $i++) { Write-Host ("  {0}. {1}" -f ($i + 1), $Pasos[$i]) }
+    if ($No) {
+        Write-Host 'QUE NO HACER' -ForegroundColor Red
+        foreach ($n in $No) { Write-Host "  - $n" }
+    }
+}
+
+function Show-RecetaIphone {
+    $pasos = @(
+        "Instala SideStore NIGHTLY: abre iloader, inicia sesion y en 'Installers' pulsa 'SideStore (Nightly)'. La version Stable no trae la correccion del 2FA.",
+        "En el iPhone: confia en el perfil (Ajustes > General > VPN y gestion de dispositivos) y conecta LocalDevVPN.",
+        "En SideStore: Ajustes > User Customizations > desactiva 'On-Device Anisette'.",
+        "En 'Anisette Client Configuration' (pestana Interactive) escribe:"
+    )
+    Show-Bloque "Apple rechaza el login que hace SideStore dentro del iPhone, aunque iloader en el PC funcione. SideStore Nightly lo corrige, pero hay que decirle que se identifique como el servidor Windows." $pasos $null
+    $ci = if ($script:ClientInfoWin) { $script:ClientInfoWin } else { '<PC> <Windows;6.2(0,0);9200> <com.apple.AuthKit/1 (com.apple.iTunes/12.12.4.1)>' }
+    $ua = if ($script:UserAgentWin) { $script:UserAgentWin } else { 'akd/1.0 CFNetwork/808.1.4' }
+    Write-Host "       Client Info : $ci" -ForegroundColor White
+    Write-Host "       User Agent  : $ua" -ForegroundColor White
+    Write-Host "  5. Pulsa 'Save Overrides' y cierra SideStore del todo (desde el selector de apps)."
+    Write-Host "  6. Abre SideStore e inicia sesion UNA vez. El codigo de 6 digitos sale en el iPhone una sola vez: anotalo antes de cerrarlo, y elige el codigo de dispositivo de confianza (no SMS)."
+    Write-Host "  7. Si da error HTTP 404: en 'Anisette Servers' elige 'Jkcoxson' (mac-ani.jkcoxson.com) con el client info por defecto. Windows con Windows, Mac con Mac."
+    Write-Host 'QUE NO HACER' -ForegroundColor Red
+    Write-Host '  - No pruebes mas de 1 o 2 veces seguidas: Apple puede bloquear tu cuenta (error -20209).'
+}
+
+# Devuelve 'pairing' si conviene ofrecer el modo Pairing del script.
+function Show-Solucion([string]$Id, [string]$Donde) {
+    $oferta = ''
+    switch ($Id) {
+        '80045' {
+            if ($Donde -eq 'iphone') { Show-RecetaIphone }
+            else {
+                Show-Bloque "Apple ha rechazado el inicio de sesion de iloader. Desde el 12-13 de octubre de 2026 Apple cambio su sistema de login y algunas cuentas o redes siguen rechazadas aunque todo este bien configurado. Depende de tu cuenta y de tu red, no de tu PC." @(
+                    "Comprueba que iloader es la 2.3.8 o superior (arriba te digo cual tienes; si esta viejo, actualizalo).",
+                    "En iloader pulsa 'Restablecer estado de Anisette', elige un servidor 'Windows' de la lista e inicia sesion UNA vez. Si falla, repite UNA vez con uno 'Mac'.",
+                    "Cuando pida verificacion en dos pasos, usa el codigo de un dispositivo de confianza (el SMS falla de momento).",
+                    "Cambia de red (por ejemplo, comparte datos del movil con el PC) e intentalo una vez.",
+                    "Prueba con otro Apple ID (uno secundario): es lo que mas suele funcionar.",
+                    "Si nada funciona, espera unas horas o dias: es un problema del lado de Apple."
+                ) @("No reintentes muchas veces seguidas: Apple puede bloquear tu cuenta (error -20209).")
+            }
+        }
+        '20209' {
+            Show-Bloque "Apple ha bloqueado tu cuenta por seguridad, normalmente tras varios intentos fallidos de inicio de sesion. Es inofensivo y se resuelve." @(
+                "Entra en https://iforgot.apple.com y sigue los pasos para desbloquearla (necesitaras un dispositivo de confianza o tu telefono).",
+                "Cuando la desbloquees, espera un rato antes de volver a probar.",
+                "Intenta iniciar sesion UNA sola vez, con iloader actualizado y codigo de dispositivo de confianza.",
+                "Si vuelve a bloquearse, usa un Apple ID secundario solo para SideStore."
+            ) @("No insistas con la cuenta bloqueada: solo empeora.")
+        }
+        '503' {
+            Show-Bloque "El servidor de Apple o el servidor anisette esta saturado, o Apple te esta limitando por haber hecho muchos intentos (errores 503/429)." @(
+                "Actualiza iloader a la ultima version (la 2.3.8 ya corrige el 503).",
+                "En iloader cambia de servidor anisette (lista desplegable en Ajustes) y pulsa 'Restablecer estado de Anisette'.",
+                "Espera un buen rato antes de volver a probar.",
+                "Cambia de red (datos del movil compartidos) y prueba una vez.",
+                $(if ($Donde -eq 'iphone') { "En SideStore usa la version Nightly y la configuracion de anisette del apartado -80045 (iPhone)." } else { "Si pasa solo con tu Apple ID, prueba con otro." })
+            ) @("No reintentes seguido: Apple te limita mas.")
+        }
+        'password' {
+            Show-Bloque "Apple dice que el correo o la contrasena no son correctos, o que la cuenta no puede usarse para desarrollo." @(
+                "Escribe el correo y la contrasena con cuidado (distingue mayusculas y minusculas).",
+                "Comprueba que puedes entrar en https://account.apple.com con esos mismos datos.",
+                "Si la cuenta es nueva, inicia sesion en https://developer.apple.com y acepta los terminos (errores 1102 o -1011).",
+                "Revisa que la fecha y hora del PC y del iPhone son correctas (el diagnostico de arriba mira la del PC).",
+                "Si sigue, crea un Apple ID nuevo solo para SideStore."
+            ) @("No uses llaves de seguridad como 2FA: no estan soportadas. Usa codigo de dispositivo de confianza.")
+        }
+        '2fa' {
+            Show-Bloque "Apple pide el codigo de verificacion, pero SideStore/iloader no lo procesa bien (error -22411, o el SMS falla)." @(
+                "Usa el codigo de un dispositivo de confianza, no el SMS.",
+                "En SideStore usa la version Nightly (la Stable tiene este fallo).",
+                "El codigo de 6 digitos aparece una sola vez en tu otro dispositivo Apple: anotalo antes de cerrarlo.",
+                "Cierra SideStore del todo y reabrelo antes de reintentar.",
+                "Si antes del codigo sale -80045, mira la opcion de -80045 de este menu."
+            ) @("No pidas varios codigos seguidos.")
+        }
+        'udid' {
+            Show-Bloque "SideStore no encuentra el 'pairing file' de este dispositivo (caduca o se invalida al actualizar iOS)." @(
+                "En SideStore: Ajustes > Reset Pairing File.",
+                "En iloader: 'Delete Stored Pairing', luego 'Actualizar dispositivos', elige tu dispositivo y toca 'Confiar' en el.",
+                "En iloader: 'Manage Pairing File' y pulsa 'Place' junto a SideStore (o 'Place In All Apps'). Debe salir en verde.",
+                "Abre SideStore y refresca.",
+                "Si no: en SideStore, Ajustes > VPN Configuration, pon Device IP 10.7.0.1 (o la IP que hayas puesto en LocalDevVPN).",
+                "Si no: reinicia el iPhone/iPad y el PC y repite."
+            ) $null
+            $oferta = 'pairing'
+        }
+        'vpn' {
+            Show-Bloque "SideStore no puede hablar con el dispositivo: falta Wi-Fi o LocalDevVPN, o el pairing file no es valido." @(
+                "Conecta el iPhone a una red Wi-Fi (los datos moviles no sirven).",
+                "Abre LocalDevVPN y pulsa 'Connect'. Debe estar conectada siempre que instales o refresques apps.",
+                "Si sigue: reemplaza el pairing file (opcion 'UDID/pairing' de este menu).",
+                "Si tienes iOS 26.4 o superior: usa SideStore Nightly.",
+                "En SideStore: Ajustes > VPN Configuration > Device IP = 10.7.0.1."
+            ) $null
+            $oferta = 'pairing'
+        }
+        'usb' {
+            Show-Bloque "El PC no ve tu iPhone/iPad por USB, asi que iloader no puede trabajar." @(
+                "Usa un cable USB de datos (algunos solo cargan), otro puerto del PC y sin hubs.",
+                "Desbloquea el dispositivo, ve a la pantalla de inicio y toca 'Confiar' + tu codigo.",
+                "Mira arriba si el driver USB de Apple esta instalado y en marcha; si falta, ejecuta el modo Instalar.",
+                "Abre iTunes (o 'Apple Devices') y comprueba que ve el dispositivo.",
+                "Si sigue: desinstala iTunes y Apple Mobile Device Support e instala solo 'Apple Devices' de la Microsoft Store (o al reves: iTunes de apple.com).",
+                "Reinicia el PC."
+            ) $null
+        }
+        'limite' {
+            Show-Bloque "Las cuentas Apple gratuitas tienen limites: 3 apps instaladas a la vez y 10 App IDs cada 7 dias." @(
+                "Borra las apps sideloaded que no uses (las caducadas tambien cuentan).",
+                "Los App IDs no se pueden borrar: se liberan a los 7 dias. En iloader > App IDs ves cuantos te quedan.",
+                "Instalar apps desde dentro de SideStore a veces gasta menos App IDs.",
+                "Si iloader dice 'Maximum certificates reached', deja que revoque el certificado antiguo."
+            ) $null
+        }
+        'noabre' {
+            Show-Bloque "El iPhone no deja abrir la app: falta confiar en tu perfil de desarrollador o activar el Modo desarrollador." @(
+                "Ajustes > General > VPN y gestion de dispositivos > 'App de desarrollador' > tu Apple ID > Confiar.",
+                "iOS 16 o superior: Ajustes > Privacidad y seguridad > Modo desarrollador > activar (el dispositivo se reinicia).",
+                "Abre LocalDevVPN y pulsa 'Connect'.",
+                "Abre SideStore, inicia sesion y toca el contador '7 DAYS' junto a SideStore para refrescarlo."
+            ) $null
+        }
+    }
+    return $oferta
+}
+
+# ---- resumen e informe
+function Show-Resumen {
+    $err = @($script:Hallazgos | Where-Object { $_.Estado -eq 'ERROR' })
+    $avi = @($script:Hallazgos | Where-Object { $_.Estado -eq 'AVISO' })
+    $ok = @($script:Hallazgos | Where-Object { $_.Estado -eq 'OK' })
+    Write-Host "`nRESUMEN: $($ok.Count) cosas bien, $($avi.Count) avisos, $($err.Count) problemas." -ForegroundColor Cyan
+    $pend = @($err + $avi | Where-Object { $_.Accion })
+    if ($pend.Count -gt 0) {
+        Write-Host 'Lo que conviene hacer en tu PC:' -ForegroundColor Yellow
+        foreach ($h in $pend) { Write-Host "  - $($h.Titulo): $($h.Accion)" }
+    } elseif ($err.Count -eq 0) {
+        Ok 'Tu PC esta bien. Si algo falla, el problema esta en la cuenta de Apple, la red o el iPhone: sigue los pasos de arriba.'
+    }
+}
+
+function Save-Informe([string]$Sintoma, [string]$Donde) {
+    try {
+        $dir = [Environment]::GetFolderPath('Desktop')
+        if (-not $dir -or -not (Test-Path $dir)) { $dir = $script:Dir; New-Item -ItemType Directory -Force $dir | Out-Null }
+        $ruta = Join-Path $dir 'SideStore-Diagnostico.txt'
+        $l = New-Object System.Collections.Generic.List[string]
+        $l.Add('SideStore Installer - informe de diagnostico')
+        $l.Add(('Fecha: {0:yyyy-MM-dd HH:mm}' -f (Get-Date)))
+        $l.Add("Windows: $([Environment]::OSVersion.Version) | PowerShell: $($PSVersionTable.PSVersion)")
+        $txt = if ($Sintoma) { (@(Get-Sintomas) | Where-Object { $_.Id -eq $Sintoma } | Select-Object -First 1).Txt } else { '(sin sintoma concreto)' }
+        $l.Add("Problema indicado: $txt")
+        if ($Donde) { $l.Add("Donde falla: $Donde") }
+        $l.Add('')
+        $l.Add('Revision automatica:')
+        foreach ($h in $script:Hallazgos) {
+            $linea = "  [$($h.Estado)] $($h.Titulo)"
+            if ($h.Detalle) { $linea += " - $($h.Detalle)" }
+            $l.Add($linea)
+        }
+        if ($script:EstadoAnisette) {
+            $l.Add('')
+            $l.Add('Servidores anisette:')
+            foreach ($a in $script:EstadoAnisette) { $l.Add(("  {0} ({1}): {2} {3}" -f $a.Nombre, $a.Servidor, $a.Estado, $a.Tipo)) }
+        }
+        $l.Add('')
+        $l.Add('Este informe no contiene tu Apple ID, contrasenas ni rutas personales.')
+        [IO.File]::WriteAllLines($ruta, $l.ToArray(), (New-Object Text.UTF8Encoding $true))
+        Write-Host "`nHe guardado un informe en: $ruta" -ForegroundColor Green
+        Write-Host 'Si pides ayuda (Discord de idevice o GitHub de iloader/SideStore), adjunta ese archivo: no lleva datos personales.'
+    } catch { Aviso "No pude guardar el informe: $($_.Exception.Message)" }
+}
+
+function Invoke-Diagnostico {
+    $script:Hallazgos = New-Object System.Collections.ArrayList
+    $script:Arreglos = @()
+    $script:Pistas = @()
+    $script:EstadoAnisette = $null
+
+    Paso 'Diagnostico de SideStore'
+    Write-Host 'Voy a revisar tu PC (1-2 minutos), te preguntare que te pasa y te dire como arreglarlo.'
+    Write-Host 'No te pedire contrasenas ni tu Apple ID. No cambio nada sin preguntarte antes.'
+
+    Paso '1/3 Revision automatica del PC'
+    Invoke-Comprobacion 'sistema'    { Test-DiagSistema }
+    Invoke-Comprobacion 'hora'       { Test-DiagHora }
+    Invoke-Comprobacion 'conexion'   { Test-DiagRed }
+    Invoke-Comprobacion 'driver USB' { Test-DiagDriver }
+    Invoke-Comprobacion 'iloader'    { Test-DiagIloader }
+    Invoke-Comprobacion 'anisette'   { Test-DiagAnisette }
+    Invoke-Comprobacion 'registro'   { Test-DiagRegistro }
+
+    if (@($script:Arreglos).Count -gt 0) {
+        Paso 'Arreglos automaticos'
+        Invoke-Arreglos
+    }
+
+    Paso '2/3 Cuentame que te pasa'
+    $sintoma = Select-Sintoma
+    $donde = ''
+    if ($sintoma -in '80045', '503', '2fa') { $donde = Select-Donde }
+
+    Paso '3/3 Diagnostico y que hacer'
+    $oferta = ''
+    if ($sintoma) { $oferta = Show-Solucion $sintoma $donde }
+    Show-Resumen
+    Save-Informe $sintoma $donde
+
+    if ($oferta -eq 'pairing' -and (Confirmar "`nQuieres que te guie ahora para regenerar el pairing file con este script?" $true)) {
+        Invoke-Pairing
+    }
+}
+
 # ---------------------------------------------------------------- flujos
 function Invoke-Instalar {
     Paso '1/6 Comprobaciones'
@@ -663,10 +1128,11 @@ function Select-Modo {
   1) Instalar SideStore (completo)        [recomendado]
   2) Solo regenerar el pairing file       (SideStore ya instalado)
   3) Limpiar: desinstalar iloader y drivers de Apple
-  4) Salir
+  4) Diagnostico: algo falla, ayudame a encontrar la causa
+  5) Salir
 '@
-    do { $r = Read-Host 'Elige 1-4' } until ($r -match '^[1-4]$')
-    switch ($r) { '1' { 'Instalar' } '2' { 'Pairing' } '3' { 'Limpiar' } '4' { 'Salir' } }
+    do { $r = Read-Host 'Elige 1-5' } until ($r -match '^[1-5]$')
+    switch ($r) { '1' { 'Instalar' } '2' { 'Pairing' } '3' { 'Limpiar' } '4' { 'Diagnostico' } '5' { 'Salir' } }
 }
 
 function Invoke-Main {
@@ -706,6 +1172,7 @@ function Invoke-Main {
             'Instalar' { Invoke-Instalar }
             'Pairing'  { Invoke-Pairing }
             'Limpiar'  { Invoke-Limpieza }
+            'Diagnostico' { Invoke-Diagnostico }
             'Salir'    { return }
         }
         Ok "`nTerminado. Log: $log"
