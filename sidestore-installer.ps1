@@ -471,10 +471,15 @@ Error -80045 "This action cannot be completed at this time":
   2. Con 2FA, usa el codigo de un dispositivo de confianza (segun iloader, el SMS falla de momento).
   3. Cambia de red (datos del movil compartidos) y/o usa un Apple ID secundario: es lo que mas
      funciona cuando una cuenta o IP concreta sigue rechazada.
-  4. Si falla en SideStore (iPhone) pero no en iloader: Ajustes > User Customizations > desactiva
-     'On-Device Anisette' > Anisette Client Configuration (pestana Interactive) > pon el client info
-     y el user agent de abajo > 'Save Overrides' > cierra SideStore del todo y reabrelo > inicia
-     sesion. Fuente: SideStore issue 1665 (varios usuarios dicen que les funciona).
+  4. Si falla en SideStore (iPhone) pero no en iloader:
+     a) Instala la version Nightly (iloader > Installers > 'SideStore (Nightly)'); la Stable no trae
+        la correccion del 2FA (SideStore issues 1647 y 1658).
+     b) Ajustes > User Customizations > desactiva 'On-Device Anisette'.
+     c) Anisette Client Configuration (pestana Interactive) > pon el client info y el user agent de
+        abajo > 'Save Overrides' > cierra SideStore del todo y reabrelo > inicia sesion (una vez).
+        Fuente: SideStore issue 1665. Si da HTTP 404, alternativa: en 'Anisette Servers' elige
+        'Jkcoxson' (mac-ani.jkcoxson.com) con el client info por defecto (Windows con Windows, Mac
+        con Mac). El codigo de 6 digitos sale en el iPhone una sola vez: anotalo.
 '@
     if ($script:ClientInfoWin) {
         Write-Host "     Client info : $($script:ClientInfoWin)"
